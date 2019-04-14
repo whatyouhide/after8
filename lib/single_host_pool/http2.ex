@@ -103,35 +103,33 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   ## Helpers
 
-  defp handle_responses(data, [{:status, ref, status} | responses]) do
-    data = put_in(data.requests[ref].response[:status], status)
-    handle_responses(data, responses)
+  defp handle_responses(data, responses) do
+    Enum.reduce(responses, data, &handle_response(&2, &1))
   end
 
-  defp handle_responses(data, [{:headers, ref, headers} | responses]) do
-    data = put_in(data.requests[ref].response[:headers], headers)
-    handle_responses(data, responses)
+  defp handle_response(data, {:status, ref, status}) do
+    put_in(data.requests[ref].response[:status], status)
   end
 
-  defp handle_responses(data, [{:data, ref, chunk} | responses]) do
-    data = update_in(data.requests[ref].response[:data], fn buff -> (buff || "") <> chunk end)
-    handle_responses(data, responses)
+  defp handle_response(data, {:headers, ref, headers}) do
+    put_in(data.requests[ref].response[:headers], headers)
   end
 
-  defp handle_responses(data, [{:done, ref} | responses]) do
-    {request, data} = pop_in(data.requests[ref])
-    %{from: from, response: response} = request
+  defp handle_response(data, {:data, ref, chunk}) do
+    update_in(data.requests[ref].response[:data], fn buff -> (buff || "") <> chunk end)
+  end
+
+  defp handle_response(data, {:done, ref}) do
+    {%{from: from, response: response}, data} = pop_in(data.requests[ref])
+
     :ok = GenServer.reply(from, {:ok, response})
-    handle_responses(data, responses)
+
+    data
   end
 
-  defp handle_responses(data, [{:error, ref, error} | responses]) do
+  defp handle_response(data, {:error, ref, error}) do
     {%{from: from}, data} = pop_in(data.requests[ref])
     :ok = GenServer.reply(from, {:error, error})
-    handle_responses(data, responses)
-  end
-
-  defp handle_responses(data, []) do
     data
   end
 end

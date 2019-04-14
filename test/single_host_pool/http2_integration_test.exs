@@ -40,6 +40,24 @@ defmodule After8.SingleHostPool.HTTP2Integration do
       assert is_list(response.headers)
       assert response.data == "HELLO WORLD"
     end
+
+    test "multiple concurrent requests" do
+      {:ok, pool} = HTTP2.start_link(hostname: "http2.golang.org", port: 443)
+
+      task1 = Task.async(fn -> HTTP2.request(pool, "PUT", "/ECHO", [], "task1") end)
+      task2 = Task.async(fn -> HTTP2.request(pool, "PUT", "/ECHO", [], "task2") end)
+      task3 = Task.async(fn -> HTTP2.request(pool, "PUT", "/ECHO", [], "task3") end)
+
+      assert [
+               {^task1, {:ok, {:ok, response1}}},
+               {^task2, {:ok, {:ok, response2}}},
+               {^task3, {:ok, {:ok, response3}}}
+             ] = Task.yield_many([task1, task2, task3])
+
+      assert response1.data == "TASK1"
+      assert response2.data == "TASK2"
+      assert response3.data == "TASK3"
+    end
   end
 
   describe "localhost:99999" do
