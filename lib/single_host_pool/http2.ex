@@ -1,7 +1,7 @@
 defmodule After8.SingleHostPool.HTTP2 do
   @behaviour :gen_statem
 
-  alias Mint.HTTP2
+  alias Mint.{HTTP2, HTTPError}
 
   require Logger
 
@@ -10,7 +10,8 @@ defmodule After8.SingleHostPool.HTTP2 do
     :hostname,
     :port,
     :connect_opts,
-    requests: %{}
+    requests: %{},
+    requests_queue: :queue.new()
   ]
 
   def start_link(opts) do
@@ -24,9 +25,7 @@ defmodule After8.SingleHostPool.HTTP2 do
   ## Callbacks
 
   @impl true
-  def callback_mode() do
-    :state_functions
-  end
+  def callback_mode(), do: [:state_functions, :state_enter]
 
   @impl true
   def init(opts) do
@@ -51,6 +50,10 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   ## Disconnected
 
+  def disconnected(:enter, :disconnected, _data) do
+    :keep_state_and_data
+  end
+
   def disconnected(:internal, :connect, data) do
     case HTTP2.connect(:https, data.hostname, data.port, data.connect_opts) do
       {:ok, conn} ->
@@ -59,6 +62,7 @@ defmodule After8.SingleHostPool.HTTP2 do
 
       {:error, _error} ->
         # TODO: log the error.
+        # TODO: exponential backoff.
         {:keep_state_and_data, {{:timeout, :reconnect}, 1000, nil}}
     end
   end
@@ -67,21 +71,49 @@ defmodule After8.SingleHostPool.HTTP2 do
     {:keep_state_and_data, {:next_event, :internal, :connect}}
   end
 
+  def disconnected(:enter, _old_state, data) do
+    # TODO: reply to all pending requests.
+    {:keep_state, data, {{:timeout, :reconnect}, 1000, nil}}
+  end
+
   def disconnected({:call, from}, {:request, _method, _path, _headers, _body}, _data) do
+    # TODO: use a better error.
     {:keep_state_and_data, {:reply, from, {:error, :disconnected}}}
   end
 
   ## Connected
 
-  def connected({:call, from}, {:request, method, path, headers, body}, data) do
+  def connected(:enter, _old_state, _data) do
+    :keep_state_and_data
+  end
+
+  def connected({:call, from}, {:request, method, path, headers, body} = request, data) do
     case HTTP2.request(data.conn, method, path, headers, body) do
       {:ok, conn, ref} ->
         data = put_in(data.conn, conn)
         data = put_in(data.requests[ref], %{from: from, response: %{}})
         {:keep_state, data}
 
-      {:error, _conn, _error} ->
-        raise "TODO"
+      {:error, conn, %HTTPError{reason: :closed_for_writing}} ->
+        data = put_in(data.conn, conn)
+        # TODO: use a better error.
+        actions = [{:reply, from, {:error, :read_only}}]
+        {:next_state, :connected_read_only, data, actions}
+
+      {:error, conn, %HTTPError{reason: :too_many_concurrent_requests}} ->
+        data = put_in(data.conn, conn)
+        data = update_in(data.requests_queue, &:queue.in(request, &1))
+        {:keep_state, data}
+
+      {:error, conn, error} ->
+        data = put_in(data.conn, conn)
+        actions = [{:reply, from, {:error, error}}]
+
+        if HTTP2.open?(conn) do
+          {:keep_state, data, actions}
+        else
+          {:next_state, :disconnected, data, actions}
+        end
     end
   end
 
@@ -90,10 +122,71 @@ defmodule After8.SingleHostPool.HTTP2 do
       {:ok, conn, responses} ->
         data = put_in(data.conn, conn)
         data = handle_responses(data, responses)
-        {:keep_state, data}
 
-      {:error, _conn, _error, _responses} ->
-        raise "TODO"
+        # TODO: unqueue requests.
+
+        cond do
+          HTTP2.open?(conn, :write) ->
+            {:keep_state, data}
+
+          HTTP2.open?(conn, :read) ->
+            {:next_state, :connected_read_only, data}
+
+          true ->
+            {:next_state, :disconnected, data}
+        end
+
+      {:error, conn, _error, responses} ->
+        # TODO: log error.
+
+        data = put_in(data.conn, conn)
+        data = handle_responses(data, responses)
+
+        if HTTP2.open?(conn, :read) do
+          {:next_state, :connected_read_only, data}
+        else
+          {:next_state, :disconnected, data}
+        end
+
+      :unknown ->
+        _ = Logger.warn(fn -> "Received unknown message: #{inspect(message)}" end)
+        :keep_state_and_data
+    end
+  end
+
+  ## Connected (read-only)
+
+  def connected_read_only(:enter, _old_state, _data) do
+    :keep_state_and_data
+  end
+
+  def connected_read_only({:call, from}, {:request, _method, _path, _headers, _body}, _data) do
+    # TODO: better error.
+    {:keep_state_and_data, {:reply, from, {:error, :read_only}}}
+  end
+
+  def connected_read_only(:info, message, data) do
+    case HTTP2.stream(data.conn, message) do
+      {:ok, conn, responses} ->
+        data = put_in(data.conn, conn)
+        data = handle_responses(data, responses)
+
+        if HTTP2.open?(conn, :read) do
+          {:keep_state, data}
+        else
+          {:next_state, :disconnected, data}
+        end
+
+      {:error, conn, _error, responses} ->
+        # TODO: log error?
+        data = put_in(data.conn, conn)
+        data = handle_responses(data, responses)
+
+        if HTTP2.open?(conn, :read) do
+          {:keep_state, data}
+        else
+          {:next_state, :disconnected, data}
+        end
 
       :unknown ->
         _ = Logger.warn(fn -> "Received unknown message: #{inspect(message)}" end)
@@ -122,14 +215,14 @@ defmodule After8.SingleHostPool.HTTP2 do
   defp handle_response(data, {:done, ref}) do
     {%{from: from, response: response}, data} = pop_in(data.requests[ref])
 
-    :ok = GenServer.reply(from, {:ok, response})
+    :ok = :gen_statem.reply(from, {:ok, response})
 
     data
   end
 
   defp handle_response(data, {:error, ref, error}) do
     {%{from: from}, data} = pop_in(data.requests[ref])
-    :ok = GenServer.reply(from, {:error, error})
+    :ok = :gen_statem.reply(from, {:error, error})
     data
   end
 end
