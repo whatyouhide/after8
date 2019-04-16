@@ -9,7 +9,7 @@ defmodule After8.SingleHostPool.HTTP2Integration do
 
   describe "http2.golang.org" do
     test "GET /" do
-      {:ok, pool} = HTTP2.start_link(hostname: "http2.golang.org", port: 443)
+      {:ok, pool} = HTTP2.start_link(scheme: :https, host: "http2.golang.org", port: 443)
 
       assert {:ok, response} = HTTP2.request(pool, "GET", "/", _headers = [])
 
@@ -20,7 +20,7 @@ defmodule After8.SingleHostPool.HTTP2Integration do
     end
 
     test "GET /file/gopher.png" do
-      {:ok, pool} = HTTP2.start_link(hostname: "http2.golang.org", port: 443)
+      {:ok, pool} = HTTP2.start_link(scheme: :https, host: "http2.golang.org", port: 443)
 
       assert {:ok, response} = HTTP2.request(pool, "GET", "/file/gopher.png", _headers = [])
 
@@ -31,7 +31,7 @@ defmodule After8.SingleHostPool.HTTP2Integration do
     end
 
     test "PUT /ECHO" do
-      {:ok, pool} = HTTP2.start_link(hostname: "http2.golang.org", port: 443)
+      {:ok, pool} = HTTP2.start_link(scheme: :https, host: "http2.golang.org", port: 443)
 
       assert {:ok, response} = HTTP2.request(pool, "PUT", "/ECHO", _headers = [], "hello world")
 
@@ -42,7 +42,7 @@ defmodule After8.SingleHostPool.HTTP2Integration do
     end
 
     test "multiple concurrent requests" do
-      {:ok, pool} = HTTP2.start_link(hostname: "http2.golang.org", port: 443)
+      {:ok, pool} = HTTP2.start_link(scheme: :https, host: "http2.golang.org", port: 443)
 
       task1 = Task.async(fn -> HTTP2.request(pool, "PUT", "/ECHO", [], "task1") end)
       task2 = Task.async(fn -> HTTP2.request(pool, "PUT", "/ECHO", [], "task2") end)
@@ -62,7 +62,7 @@ defmodule After8.SingleHostPool.HTTP2Integration do
 
   describe "localhost:99999" do
     test "any request" do
-      {:ok, pool} = HTTP2.start_link(hostname: "localhost", port: 99999)
+      {:ok, pool} = HTTP2.start_link(scheme: :https, host: "localhost", port: 99999)
 
       assert {:error, _} = HTTP2.request(pool, "GET", "/", _headers = [])
     end
