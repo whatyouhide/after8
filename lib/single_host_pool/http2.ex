@@ -7,12 +7,15 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   defstruct [
     :conn,
-    :hostname,
+    :host,
     :port,
+    :scheme,
     :connect_opts,
     requests: %{},
     requests_queue: :queue.new()
   ]
+
+  ## Public API
 
   def start_link(opts) do
     :gen_statem.start_link(__MODULE__, opts, [])
@@ -35,7 +38,8 @@ defmodule After8.SingleHostPool.HTTP2 do
       |> Keyword.put(:enable_push, false)
 
     data = %__MODULE__{
-      hostname: Keyword.fetch!(opts, :hostname),
+      scheme: Keyword.fetch!(opts, :scheme),
+      host: Keyword.fetch!(opts, :host),
       port: Keyword.fetch!(opts, :port),
       connect_opts: [
         transport_opts: Keyword.get(opts, :transport_opts, []),
@@ -55,7 +59,7 @@ defmodule After8.SingleHostPool.HTTP2 do
   end
 
   def disconnected(:internal, :connect, data) do
-    case HTTP2.connect(:https, data.hostname, data.port, data.connect_opts) do
+    case HTTP2.connect(data.scheme, data.host, data.port, data.connect_opts) do
       {:ok, conn} ->
         data = %{data | conn: conn}
         {:next_state, :connected, data}
