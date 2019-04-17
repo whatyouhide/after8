@@ -3,7 +3,7 @@ defmodule After8.HTTP2.TestServer do
 
   alias Mint.{HTTP2.Frame, HTTP2.HPACK}
 
-  defstruct [:listen_socket, :socket, :encode_table, :decode_table, :port, :task]
+  defstruct [:socket, :encode_table, :decode_table]
 
   @ssl_opts [
     mode: :binary,
@@ -16,67 +16,28 @@ defmodule After8.HTTP2.TestServer do
     keyfile: Path.absname("key.pem", __DIR__)
   ]
 
-  def start(server_settings \\ []) do
+  def start_and_connect_with(options, fun) when is_list(options) and is_function(fun, 1) do
+    ref = make_ref()
     parent = self()
 
-    {:ok, listen_socket} = :ssl.listen(0, @ssl_opts)
-    {:ok, {_address, port}} = :ssl.sockname(listen_socket)
+    server_settings = Keyword.get(options, :server_settings, [])
 
-    task =
-      Task.async(fn ->
-        {:ok, socket} = :ssl.transport_accept(listen_socket)
-        :ok = :ssl.ssl_accept(socket)
+    task = Task.async(fn -> start_socket_and_accept(parent, ref, server_settings) end)
+    assert_receive {^ref, port}, 100
 
-        :ok = perform_http2_handshake(socket, server_settings)
+    result = fun.(port)
 
-        :ok = :ssl.controlling_process(socket, parent)
+    {:ok, server_socket} = Task.await(task)
 
-        {:socket, socket}
-      end)
+    :ok = :ssl.setopts(server_socket, active: true)
 
-    %__MODULE__{
-      listen_socket: listen_socket,
-      task: task,
-      port: port,
+    server = %__MODULE__{
+      socket: server_socket,
       encode_table: HPACK.new(4096),
       decode_table: HPACK.new(4096)
     }
-  end
 
-  def port(%__MODULE__{port: port}), do: port
-
-  def flush(%__MODULE__{} = server) do
-    case Task.await(server.task) do
-      {:socket, socket} ->
-        %{server | socket: socket, task: nil}
-
-      {:expect, server} ->
-        server
-    end
-  end
-
-  def expect(%__MODULE__{} = server, fun) when is_function(fun, 1) do
-    task = Task.async(fn -> {:expect, fun.(server)} end)
-    %{server | task: task}
-  end
-
-  defmacro assert_receive_frames(server, frames) when is_list(frames) do
-    quote do
-      server = unquote(server)
-      expected_frame_count = unquote(length(frames))
-
-      # Let's just make sure that we passed a server in.
-      assert server.__struct__ == unquote(__MODULE__)
-
-      assert unquote(frames) = unquote(__MODULE__).recv_next_frames(server, expected_frame_count)
-    end
-  end
-
-  def send_frames(server, frames) do
-    # TODO: split this and random and use a few SSL calls to introduce some fuzziness
-    # in the SSL packet size.
-    encoded_frames = Enum.map(frames, &Frame.encode/1)
-    :ok = :ssl.send(server.socket, encoded_frames)
+    {result, server}
   end
 
   @spec recv_next_frames(%__MODULE__{}, pos_integer()) :: [frame :: term(), ...]
@@ -92,14 +53,9 @@ defmodule After8.HTTP2.TestServer do
     end
   end
 
-  defp recv_next_frames(%{socket: socket} = server, n, frames, buffer) do
-    case :ssl.recv(socket, 0, _timeout = 500) do
-      {:ok, data} ->
-        decode_next_frames(server, n, frames, buffer <> data)
-
-      {:error, :timeout} ->
-        flunk("Expected data because there are #{n} expected frames left")
-    end
+  defp recv_next_frames(%{socket: server_socket} = server, n, frames, buffer) do
+    assert_receive {:ssl, ^server_socket, data}, 100
+    decode_next_frames(server, n, frames, buffer <> data)
   end
 
   defp decode_next_frames(_server, 0, frames, buffer) do
@@ -138,9 +94,31 @@ defmodule After8.HTTP2.TestServer do
     {server, headers}
   end
 
+  def send_frames(%__MODULE__{socket: socket}, frames) when is_list(frames) and frames != [] do
+    # TODO: split the data at random places to increase fuzziness.
+    data = Enum.map(frames, &Frame.encode/1)
+    :ok = :ssl.send(socket, data)
+  end
+
   @spec get_socket(%__MODULE__{}) :: :ssl.sslsocket()
   def get_socket(server) do
     server.socket
+  end
+
+  defp start_socket_and_accept(parent, ref, server_settings) do
+    {:ok, listen_socket} = :ssl.listen(0, @ssl_opts)
+    {:ok, {_address, port}} = :ssl.sockname(listen_socket)
+    send(parent, {ref, port})
+
+    # Let's accept a new connection.
+    {:ok, socket} = :ssl.transport_accept(listen_socket)
+    :ok = :ssl.ssl_accept(socket)
+
+    :ok = perform_http2_handshake(socket, server_settings)
+
+    # We transfer ownership of the socket to the parent so that this task can die.
+    :ok = :ssl.controlling_process(socket, parent)
+    {:ok, socket}
   end
 
   connection_preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"

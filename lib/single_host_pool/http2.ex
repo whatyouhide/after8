@@ -11,18 +11,62 @@ defmodule After8.SingleHostPool.HTTP2 do
     :port,
     :scheme,
     :connect_opts,
-    requests: %{},
-    requests_queue: :queue.new()
+    requests: %{}
   ]
+
+  ## Types
+
+  @type t() :: :gen_statem.server_ref()
 
   ## Public API
 
+  # TODO: split out gen_statem specific option and handle name registration like
+  # we do in GenServer in Elixir.
+  @spec start_link(keyword()) :: :gen_statem.start_ret()
   def start_link(opts) do
     :gen_statem.start_link(__MODULE__, opts, [])
   end
 
+  @spec stream_request(t(), String.t(), String.t(), Mint.Types.headers(), nil | iodata()) ::
+          {:ok, Mint.Types.request_ref()} | {:error, reason :: term()}
+  def stream_request(pool, method, path, headers, body \\ nil) do
+    :gen_statem.call(pool, {:stream_request, method, path, headers, body})
+  end
+
+  @spec request(t(), String.t(), String.t(), Mint.Types.headers(), nil | iodata()) ::
+          {:ok, response :: map()} | {:error, reason :: term()}
   def request(pool, method, path, headers, body \\ nil) do
-    :gen_statem.call(pool, {:request, method, path, headers, body})
+    # TODO: implement timeout.
+
+    case stream_request(pool, method, path, headers, body) do
+      {:ok, ref} ->
+        monitor_ref = Process.monitor(pool)
+        response_waiting_loop(ref, monitor_ref, _response_acc = %{})
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp response_waiting_loop(ref, monitor_ref, response) do
+    receive do
+      {:DOWN, ^monitor_ref, _, _, _} ->
+        {:error, :connection_went_down}
+
+      {kind, ^ref, value} when kind in [:status, :headers] ->
+        response = Map.put(response, kind, value)
+        response_waiting_loop(ref, monitor_ref, response)
+
+      {:data, ^ref, data} ->
+        response = Map.update(response, :data, data, &(&1 <> data))
+        response_waiting_loop(ref, monitor_ref, response)
+
+      {:done, ^ref} ->
+        {:ok, response}
+
+      {:error, ^ref, error} ->
+        {:error, error}
+    end
   end
 
   ## Callbacks
@@ -54,6 +98,7 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   ## Disconnected
 
+  # TODO: notify all waiting pids.
   def disconnected(:enter, :disconnected, _data) do
     :keep_state_and_data
   end
@@ -80,7 +125,9 @@ defmodule After8.SingleHostPool.HTTP2 do
     {:keep_state, data, {{:timeout, :reconnect}, 1000, nil}}
   end
 
-  def disconnected({:call, from}, {:request, _method, _path, _headers, _body}, _data) do
+  # If we get a request while the connection is closed for writing, we
+  # return an error right away.
+  def disconnected({:call, from}, {:stream_request, _method, _path, _headers, _body}, _data) do
     # TODO: use a better error.
     {:keep_state_and_data, {:reply, from, {:error, :disconnected}}}
   end
@@ -91,12 +138,16 @@ defmodule After8.SingleHostPool.HTTP2 do
     :keep_state_and_data
   end
 
-  def connected({:call, from}, {:request, method, path, headers, body} = request, data) do
+  def connected({:call, from}, {:stream_request, method, path, headers, body}, data) do
+    # TODO: monitor caller.
+
     case HTTP2.request(data.conn, method, path, headers, body) do
       {:ok, conn, ref} ->
+        {from_pid, _from_ref} = from
         data = put_in(data.conn, conn)
-        data = put_in(data.requests[ref], %{from: from, response: %{}})
-        {:keep_state, data}
+        data = put_in(data.requests[ref], from_pid)
+        actions = [{:reply, from, {:ok, ref}}]
+        {:keep_state, data, actions}
 
       {:error, conn, %HTTPError{reason: :closed_for_writing}} ->
         data = put_in(data.conn, conn)
@@ -104,11 +155,7 @@ defmodule After8.SingleHostPool.HTTP2 do
         actions = [{:reply, from, {:error, :read_only}}]
         {:next_state, :connected_read_only, data, actions}
 
-      {:error, conn, %HTTPError{reason: :too_many_concurrent_requests}} ->
-        data = put_in(data.conn, conn)
-        data = update_in(data.requests_queue, &:queue.in(request, &1))
-        {:keep_state, data}
-
+      # TODO: queue this request on :too_many_concurrent_requests.
       {:error, conn, error} ->
         data = put_in(data.conn, conn)
         actions = [{:reply, from, {:error, error}}]
@@ -125,9 +172,7 @@ defmodule After8.SingleHostPool.HTTP2 do
     case HTTP2.stream(data.conn, message) do
       {:ok, conn, responses} ->
         data = put_in(data.conn, conn)
-        data = handle_responses(data, responses)
-
-        # TODO: unqueue requests.
+        data = Enum.reduce(responses, data, &handle_response(&2, &1))
 
         cond do
           HTTP2.open?(conn, :write) ->
@@ -144,7 +189,7 @@ defmodule After8.SingleHostPool.HTTP2 do
         # TODO: log error.
 
         data = put_in(data.conn, conn)
-        data = handle_responses(data, responses)
+        data = Enum.reduce(responses, data, &handle_response(&2, &1))
 
         if HTTP2.open?(conn, :read) do
           {:next_state, :connected_read_only, data}
@@ -164,7 +209,13 @@ defmodule After8.SingleHostPool.HTTP2 do
     :keep_state_and_data
   end
 
-  def connected_read_only({:call, from}, {:request, _method, _path, _headers, _body}, _data) do
+  # If the connection is closed for writing, we return an error right away
+  # when the user tries to make a request.
+  def connected_read_only(
+        {:call, from},
+        {:stream_request, _method, _path, _headers, _body},
+        _data
+      ) do
     # TODO: better error.
     {:keep_state_and_data, {:reply, from, {:error, :read_only}}}
   end
@@ -173,7 +224,7 @@ defmodule After8.SingleHostPool.HTTP2 do
     case HTTP2.stream(data.conn, message) do
       {:ok, conn, responses} ->
         data = put_in(data.conn, conn)
-        data = handle_responses(data, responses)
+        data = Enum.reduce(responses, data, &handle_response(&2, &1))
 
         if HTTP2.open?(conn, :read) do
           {:keep_state, data}
@@ -184,7 +235,7 @@ defmodule After8.SingleHostPool.HTTP2 do
       {:error, conn, _error, responses} ->
         # TODO: log error?
         data = put_in(data.conn, conn)
-        data = handle_responses(data, responses)
+        data = Enum.reduce(responses, data, &handle_response(&2, &1))
 
         if HTTP2.open?(conn, :read) do
           {:keep_state, data}
@@ -200,33 +251,21 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   ## Helpers
 
-  defp handle_responses(data, responses) do
-    Enum.reduce(responses, data, &handle_response(&2, &1))
-  end
-
-  defp handle_response(data, {:status, ref, status}) do
-    put_in(data.requests[ref].response[:status], status)
-  end
-
-  defp handle_response(data, {:headers, ref, headers}) do
-    put_in(data.requests[ref].response[:headers], headers)
-  end
-
-  defp handle_response(data, {:data, ref, chunk}) do
-    update_in(data.requests[ref].response[:data], fn buff -> (buff || "") <> chunk end)
-  end
-
-  defp handle_response(data, {:done, ref}) do
-    {%{from: from, response: response}, data} = pop_in(data.requests[ref])
-
-    :ok = :gen_statem.reply(from, {:ok, response})
-
+  defp handle_response(data, {kind, ref, _value} = response)
+       when kind in [:status, :headers, :data] do
+    send(data.requests[ref], response)
     data
   end
 
-  defp handle_response(data, {:error, ref, error}) do
-    {%{from: from}, data} = pop_in(data.requests[ref])
-    :ok = :gen_statem.reply(from, {:error, error})
+  defp handle_response(data, {:done, ref} = response) do
+    {pid, data} = pop_in(data.requests[ref])
+    send(pid, response)
+    data
+  end
+
+  defp handle_response(data, {:error, ref, _error} = response) do
+    {pid, data} = pop_in(data.requests[ref])
+    send(pid, response)
     data
   end
 end
