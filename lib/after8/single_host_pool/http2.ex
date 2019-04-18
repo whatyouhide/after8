@@ -51,7 +51,7 @@ defmodule After8.SingleHostPool.HTTP2 do
   defp response_waiting_loop(ref, monitor_ref, response) do
     receive do
       {:DOWN, ^monitor_ref, _, _, _} ->
-        {:error, :connection_went_down}
+        {:error, wrap_error(:connection_process_went_down)}
 
       {kind, ^ref, value} when kind in [:status, :headers] ->
         response = Map.put(response, kind, value)
@@ -108,8 +108,7 @@ defmodule After8.SingleHostPool.HTTP2 do
   def disconnected(:enter, _old_state, data) do
     :ok =
       Enum.each(data.requests, fn {ref, pid} ->
-        # TODO: use a better error.
-        send(pid, {:error, ref, :disconnected})
+        send(pid, {:error, ref, wrap_error(:connection_closed)})
       end)
 
     data = put_in(data.requests, %{})
@@ -140,8 +139,7 @@ defmodule After8.SingleHostPool.HTTP2 do
   # If we get a request while the connection is closed for writing, we
   # return an error right away.
   def disconnected({:call, from}, {:stream_request, _method, _path, _headers, _body}, _data) do
-    # TODO: use a better error.
-    {:keep_state_and_data, {:reply, from, {:error, :disconnected}}}
+    {:keep_state_and_data, {:reply, from, {:error, wrap_error(:disconnected)}}}
   end
 
   ## Connected
@@ -163,8 +161,7 @@ defmodule After8.SingleHostPool.HTTP2 do
 
       {:error, conn, %HTTPError{reason: :closed_for_writing}} ->
         data = put_in(data.conn, conn)
-        # TODO: use a better error.
-        actions = [{:reply, from, {:error, :read_only}}]
+        actions = [{:reply, from, {:error, wrap_error(:read_only)}}]
         {:next_state, :connected_read_only, data, actions}
 
       # TODO: queue this request on :too_many_concurrent_requests.
@@ -228,8 +225,7 @@ defmodule After8.SingleHostPool.HTTP2 do
         {:stream_request, _method, _path, _headers, _body},
         _data
       ) do
-    # TODO: better error.
-    {:keep_state_and_data, {:reply, from, {:error, :read_only}}}
+    {:keep_state_and_data, {:reply, from, {:error, wrap_error(:read_only)}}}
   end
 
   def connected_read_only(:info, message, data) do
@@ -279,5 +275,9 @@ defmodule After8.SingleHostPool.HTTP2 do
     {pid, data} = pop_in(data.requests[ref])
     send(pid, response)
     data
+  end
+
+  defp wrap_error(reason) do
+    %After8.Error{reason: reason}
   end
 end

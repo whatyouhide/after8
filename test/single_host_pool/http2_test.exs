@@ -4,6 +4,8 @@ defmodule After8.SingleHostPool.HTTP2Test do
   import Mint.HTTP2.Frame
 
   alias After8.SingleHostPool.HTTP2
+  alias After8.Error
+
   alias After8.HTTP2.TestServer
 
   defmacrop assert_recv_frames(frames) when is_list(frames) do
@@ -88,7 +90,7 @@ defmodule After8.SingleHostPool.HTTP2Test do
            ]
 
     # We can't send any more requests since the connection is closed for writing.
-    assert {:error, :read_only} = HTTP2.stream_request(pool, "GET", "/", [])
+    assert {:error, %Error{reason: :read_only}} = HTTP2.stream_request(pool, "GET", "/", [])
 
     # If the server now closes the socket, we actually shut down.
 
@@ -97,7 +99,7 @@ defmodule After8.SingleHostPool.HTTP2Test do
     Process.sleep(50)
 
     # If we try to make a request now that the server shut down, we get an error.
-    assert {:error, :disconnected} = HTTP2.stream_request(pool, "GET", "/", [])
+    assert {:error, %Error{reason: :disconnected}} = HTTP2.stream_request(pool, "GET", "/", [])
   end
 
   test "if server disconnects while there are waiting clients, we notify those clients" do
@@ -126,7 +128,7 @@ defmodule After8.SingleHostPool.HTTP2Test do
     assert receive_responses_until_done_or_error(ref) == [
              {:status, ref, 200},
              {:headers, ref, []},
-             {:error, ref, :disconnected}
+             {:error, ref, %Error{reason: :connection_closed}}
            ]
   end
 
