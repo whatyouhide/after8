@@ -100,6 +100,36 @@ defmodule After8.SingleHostPool.HTTP2Test do
     assert {:error, :disconnected} = HTTP2.stream_request(pool, "GET", "/", [])
   end
 
+  test "if server disconnects while there are waiting clients, we notify those clients" do
+    {:ok, pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [])
+
+    assert_recv_frames [headers(stream_id: stream_id)]
+
+    hbf = server_encode_headers([{":status", "200"}])
+
+    server_send_frames([
+      headers(stream_id: stream_id, hbf: hbf, flags: set_flags(:headers, [:end_headers]))
+    ])
+
+    :ok = :ssl.close(server_socket())
+
+    assert receive_responses_until_done_or_error(ref) == [
+             {:status, ref, 200},
+             {:headers, ref, []},
+             {:error, ref, :disconnected}
+           ]
+  end
+
   @pdict_key {__MODULE__, :http2_test_server}
 
   defp start_server_and_connect_with(opts \\ [], fun) do
@@ -146,6 +176,9 @@ defmodule After8.SingleHostPool.HTTP2Test do
 
       {:error, ^ref, _error} = response ->
         Enum.reverse([response | responses])
+    after
+      2000 ->
+        flunk("Did not receive a :done or :error response for the given request")
     end
   end
 end

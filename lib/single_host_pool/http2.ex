@@ -98,9 +98,26 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   ## Disconnected
 
-  # TODO: notify all waiting pids.
+  # This only happens the first time we enter the first state, which is :disconnected.
   def disconnected(:enter, :disconnected, _data) do
     :keep_state_and_data
+  end
+
+  # When we enter the disconnected state, we send an :error response to all
+  # pending requests and then set a timer for reconnecting.
+  def disconnected(:enter, _old_state, data) do
+    :ok =
+      Enum.each(data.requests, fn {ref, pid} ->
+        # TODO: use a better error.
+        send(pid, {:error, ref, :disconnected})
+      end)
+
+    data = put_in(data.requests, %{})
+    data = put_in(data.conn, nil)
+
+    # TODO: exponential backoff.
+    actions = [{{:timeout, :reconnect}, 1000, nil}]
+    {:keep_state, data, actions}
   end
 
   def disconnected(:internal, :connect, data) do
@@ -118,11 +135,6 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   def disconnected({:timeout, :reconnect}, nil, _data) do
     {:keep_state_and_data, {:next_event, :internal, :connect}}
-  end
-
-  def disconnected(:enter, _old_state, data) do
-    # TODO: reply to all pending requests.
-    {:keep_state, data, {{:timeout, :reconnect}, 1000, nil}}
   end
 
   # If we get a request while the connection is closed for writing, we
