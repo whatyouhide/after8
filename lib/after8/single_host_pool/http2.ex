@@ -59,47 +59,67 @@ defmodule After8.SingleHostPool.HTTP2 do
     end
   end
 
-  @spec stream_request(t(), String.t(), String.t(), Mint.Types.headers(), nil | iodata()) ::
+  @spec stream_request(
+          t(),
+          String.t(),
+          String.t(),
+          Mint.Types.headers(),
+          nil | iodata(),
+          keyword()
+        ) ::
           {:ok, Mint.Types.request_ref()} | {:error, reason :: term()}
-  def stream_request(pool, method, path, headers, body \\ nil) do
+  def stream_request(pool, method, path, headers, body \\ nil, options \\ []) do
     pool = GenServer.whereis(pool)
-    :gen_statem.call(pool, {:stream_request, method, path, headers, body})
+    options = Keyword.put_new(options, :timeout, :infinity)
+    :gen_statem.call(pool, {:stream_request, method, path, headers, body, options})
   end
 
   @spec request(t(), String.t(), String.t(), Mint.Types.headers(), nil | iodata()) ::
           {:ok, response :: map()} | {:error, reason :: term()}
-  def request(pool, method, path, headers, body \\ nil) do
-    # TODO: implement timeout.
+  def request(pool, method, path, headers, body \\ nil, options \\ []) do
     pool = GenServer.whereis(pool)
+    options = Keyword.put_new(options, :timeout, :infinity)
+    timeout = options[:timeout]
 
-    case stream_request(pool, method, path, headers, body) do
+    case stream_request(pool, method, path, headers, body, options) do
       {:ok, ref} ->
         monitor_ref = Process.monitor(pool)
-        response_waiting_loop(ref, monitor_ref, _response_acc = %{})
+        # If the timeout is an integer, we add a fail-safe "after" clause that fires
+        # after a timeout that is double the original timeout (min 2000ms). This means
+        # that if there are no bugs in our code, then the normal :request_timeout is
+        # returned, but otherwise we have a way to escape this code, raise an error, and
+        # get the process unstuck.
+        fail_safe_timeout = if is_integer(timeout), do: max(2000, timeout * 2), else: :infinity
+        response_waiting_loop(ref, monitor_ref, _response_acc = %{}, fail_safe_timeout)
 
       {:error, error} ->
         {:error, error}
     end
   end
 
-  defp response_waiting_loop(ref, monitor_ref, response) do
+  defp response_waiting_loop(ref, monitor_ref, response, fail_safe_timeout) do
     receive do
       {:DOWN, ^monitor_ref, _, _, _} ->
         {:error, wrap_error(:connection_process_went_down)}
 
       {kind, ^ref, value} when kind in [:status, :headers] ->
         response = Map.put(response, kind, value)
-        response_waiting_loop(ref, monitor_ref, response)
+        response_waiting_loop(ref, monitor_ref, response, fail_safe_timeout)
 
       {:data, ^ref, data} ->
         response = Map.update(response, :data, data, &(&1 <> data))
-        response_waiting_loop(ref, monitor_ref, response)
+        response_waiting_loop(ref, monitor_ref, response, fail_safe_timeout)
 
       {:done, ^ref} ->
         {:ok, response}
 
       {:error, ^ref, error} ->
         {:error, error}
+    after
+      fail_safe_timeout ->
+        raise "no response was received even after waiting #{fail_safe_timeout}ms. " <>
+                "This is likely a bug in After8, but we're raising so that your system doesn't " <>
+                "get stuck in an infinite receive."
     end
   end
 
@@ -176,9 +196,21 @@ defmodule After8.SingleHostPool.HTTP2 do
     {:keep_state_and_data, {:next_event, :internal, {:connect, next_backoff}}}
   end
 
+  # We cancel all request timeouts as soon as we enter the :disconnected state, but
+  # some timeouts might fire while changing states, so we need to handle them here.
+  # Since we replied to all pending requests when entering the :disconnected state,
+  # we can just do nothing here.
+  def disconnected({:timeout, {:request_timeout, _ref}}, _content, _data) do
+    :keep_state_and_data
+  end
+
   # If we get a request while the connection is closed for writing, we
   # return an error right away.
-  def disconnected({:call, from}, {:stream_request, _method, _path, _headers, _body}, _data) do
+  def disconnected(
+        {:call, from},
+        {:stream_request, _method, _path, _headers, _body, _opts},
+        _data
+      ) do
     {:keep_state_and_data, {:reply, from, {:error, wrap_error(:disconnected)}}}
   end
 
@@ -188,13 +220,19 @@ defmodule After8.SingleHostPool.HTTP2 do
     :keep_state_and_data
   end
 
-  def connected({:call, from}, {:stream_request, method, path, headers, body}, data) do
+  def connected({:call, from}, {:stream_request, method, path, headers, body, opts}, data) do
     case HTTP2.request(data.conn, method, path, headers, body) do
       {:ok, conn, ref} ->
         {from_pid, _from_ref} = from
         data = put_in(data.conn, conn)
         data = put_in(data.requests[ref], from_pid)
-        actions = [{:reply, from, {:ok, ref}}]
+
+        # :infinity timeouts are not queued at all by gen_statem.
+        actions = [
+          {:reply, from, {:ok, ref}},
+          {{:timeout, {:request_timeout, ref}}, opts[:timeout], _content = nil}
+        ]
+
         {:keep_state, data, actions}
 
       {:error, conn, %HTTPError{reason: :closed_for_writing}} ->
@@ -219,7 +257,50 @@ defmodule After8.SingleHostPool.HTTP2 do
     case HTTP2.stream(data.conn, message) do
       {:ok, conn, responses} ->
         data = put_in(data.conn, conn)
-        data = Enum.reduce(responses, data, &handle_response(&2, &1))
+        {data, actions} = handle_responses(data, responses)
+
+        cond do
+          HTTP2.open?(conn, :write) ->
+            {:keep_state, data, actions}
+
+          HTTP2.open?(conn, :read) ->
+            {:next_state, :connected_read_only, data, actions}
+
+          true ->
+            {:next_state, :disconnected, data, actions}
+        end
+
+      {:error, conn, error, responses} ->
+        _ =
+          Logger.error([
+            "Received error from server #{data.scheme}:#{data.host}:#{data.port}: ",
+            Exception.message(error)
+          ])
+
+        data = put_in(data.conn, conn)
+        {data, actions} = handle_responses(data, responses)
+
+        if HTTP2.open?(conn, :read) do
+          {:next_state, :connected_read_only, data, actions}
+        else
+          {:next_state, :disconnected, data, actions}
+        end
+
+      :unknown ->
+        _ = Logger.warn(["Received unknown message: ", inspect(message)])
+        :keep_state_and_data
+    end
+  end
+
+  def connected({:timeout, {:request_timeout, ref}}, _content, data) do
+    with {:pop, {from_pid, data}} when is_pid(from_pid) <- {:pop, pop_in(data.requests[ref])},
+         {:ok, conn} <- HTTP2.cancel_request(data.conn, ref) do
+      data = put_in(data.conn, conn)
+      send(from_pid, {:error, ref, wrap_error(:request_timeout)})
+      {:keep_state, data}
+    else
+      {:error, conn, _error} ->
+        data = put_in(data.conn, conn)
 
         cond do
           HTTP2.open?(conn, :write) ->
@@ -232,24 +313,10 @@ defmodule After8.SingleHostPool.HTTP2 do
             {:next_state, :disconnected, data}
         end
 
-      {:error, conn, error, responses} ->
-        _ =
-          Logger.error([
-            "Received error from server #{data.scheme}:#{data.host}:#{data.port}: ",
-            Exception.message(error)
-          ])
-
-        data = put_in(data.conn, conn)
-        data = Enum.reduce(responses, data, &handle_response(&2, &1))
-
-        if HTTP2.open?(conn, :read) do
-          {:next_state, :connected_read_only, data}
-        else
-          {:next_state, :disconnected, data}
-        end
-
-      :unknown ->
-        _ = Logger.warn(["Received unknown message: ", inspect(message)])
+      # The timer might have fired while we were receiving :done/:error for this
+      # request, so we don't have the request stored anymore but we still get the
+      # timer event. In those cases, we do nothing.
+      {:pop, {nil, _data}} ->
         :keep_state_and_data
     end
   end
@@ -264,7 +331,7 @@ defmodule After8.SingleHostPool.HTTP2 do
   # when the user tries to make a request.
   def connected_read_only(
         {:call, from},
-        {:stream_request, _method, _path, _headers, _body},
+        {:stream_request, _method, _path, _headers, _body, _opts},
         _data
       ) do
     {:keep_state_and_data, {:reply, from, {:error, wrap_error(:read_only)}}}
@@ -274,12 +341,12 @@ defmodule After8.SingleHostPool.HTTP2 do
     case HTTP2.stream(data.conn, message) do
       {:ok, conn, responses} ->
         data = put_in(data.conn, conn)
-        data = Enum.reduce(responses, data, &handle_response(&2, &1))
+        {data, actions} = handle_responses(data, responses)
 
         if HTTP2.open?(conn, :read) do
-          {:keep_state, data}
+          {:keep_state, data, actions}
         else
-          {:next_state, :disconnected, data}
+          {:next_state, :disconnected, data, actions}
         end
 
       {:error, conn, error, responses} ->
@@ -290,12 +357,12 @@ defmodule After8.SingleHostPool.HTTP2 do
           ])
 
         data = put_in(data.conn, conn)
-        data = Enum.reduce(responses, data, &handle_response(&2, &1))
+        {data, actions} = handle_responses(data, responses)
 
         if HTTP2.open?(conn, :read) do
-          {:keep_state, data}
+          {:keep_state, data, actions}
         else
-          {:next_state, :disconnected, data}
+          {:next_state, :disconnected, data, actions}
         end
 
       :unknown ->
@@ -304,24 +371,52 @@ defmodule After8.SingleHostPool.HTTP2 do
     end
   end
 
+  # In this state, we don't need to call HTTP2.cancel_request/2 since the connection
+  # is closed for writing, so we can't tell the server to cancel the request anymore.
+  def connected_read_only({:timeout, {:request_timeout, ref}}, _content, data) do
+    # We might get a request timeout that fired in the moment when we received the
+    # whole request, so we don't have the request in the state but we get the
+    # timer event anyways. In those cases, we don't do anything.
+    case pop_in(data.requests[ref]) do
+      {nil, _data} ->
+        :keep_state_and_data
+
+      {from_pid, data} ->
+        send(from_pid, {:error, ref, wrap_error(:request_timeout)})
+        {:keep_state, data}
+    end
+  end
+
   ## Helpers
 
-  defp handle_response(data, {kind, ref, _value} = response)
+  defp handle_responses(data, responses) do
+    Enum.reduce(responses, {data, _actions = []}, fn response, {data, actions} ->
+      handle_response(data, response, actions)
+    end)
+  end
+
+  defp handle_response(data, {kind, ref, _value} = response, actions)
        when kind in [:status, :headers, :data] do
     send(data.requests[ref], response)
-    data
+    {data, actions}
   end
 
-  defp handle_response(data, {:done, ref} = response) do
+  defp handle_response(data, {:done, ref} = response, actions) do
     {pid, data} = pop_in(data.requests[ref])
     send(pid, response)
-    data
+    {data, [cancel_request_timeout_action(ref) | actions]}
   end
 
-  defp handle_response(data, {:error, ref, _error} = response) do
+  defp handle_response(data, {:error, ref, _error} = response, actions) do
     {pid, data} = pop_in(data.requests[ref])
     send(pid, response)
-    data
+    {data, [cancel_request_timeout_action(ref) | actions]}
+  end
+
+  defp cancel_request_timeout_action(request_ref) do
+    # By setting the timeout to :infinity, we cancel this timeout as per
+    # gen_statem documentation.
+    {{:timeout, {:request_timeout, request_ref}}, :infinity, nil}
   end
 
   defp wrap_error(reason) do

@@ -154,6 +154,122 @@ defmodule After8.SingleHostPool.HTTP2Test do
              HTTP2.stream_request(pool, "GET", "/", [])
   end
 
+  test "request timeout with timeout of 0" do
+    {:ok, pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [], nil, timeout: 0)
+
+    assert_recv_frames [headers()]
+
+    assert receive_responses_until_done_or_error(ref) == [
+             {:error, ref, %Error{reason: :request_timeout}}
+           ]
+  end
+
+  test "request timeout with timeout > 0" do
+    {:ok, pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [], nil, timeout: 50)
+
+    assert_recv_frames [headers(stream_id: stream_id)]
+
+    hbf = server_encode_headers([{":status", "200"}])
+
+    server_send_frames([
+      headers(stream_id: stream_id, hbf: hbf, flags: set_flags(:headers, [:end_headers]))
+    ])
+
+    assert receive_responses_until_done_or_error(ref) == [
+             {:status, ref, 200},
+             {:headers, ref, []},
+             {:error, ref, %Error{reason: :request_timeout}}
+           ]
+  end
+
+  test "request timeout with timeout > 0 that fires after request is done" do
+    {:ok, pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [], nil, timeout: 50)
+
+    assert_recv_frames [headers(stream_id: stream_id)]
+
+    server_send_frames([
+      headers(
+        stream_id: stream_id,
+        hbf: server_encode_headers([{":status", "200"}]),
+        flags: set_flags(:headers, [:end_headers, :end_stream])
+      )
+    ])
+
+    assert receive_responses_until_done_or_error(ref) == [
+             {:status, ref, 200},
+             {:headers, ref, []},
+             {:done, ref}
+           ]
+
+    assert_recv_frames [rst_stream(stream_id: ^stream_id, error_code: :no_error)]
+
+    refute_receive _any, 200
+  end
+
+  test "request timeout with timeout > 0 where :done arrives after timeout" do
+    {:ok, pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [], nil, timeout: 10)
+
+    assert_recv_frames [headers(stream_id: stream_id)]
+
+    # We sleep enough so that the timeout fires, then we send a response.
+    Process.sleep(30)
+
+    server_send_frames([
+      headers(
+        stream_id: stream_id,
+        hbf: server_encode_headers([{":status", "200"}]),
+        flags: set_flags(:headers, [:end_headers, :end_stream])
+      )
+    ])
+
+    # When there's a timeout, we cancel the request.
+    assert_recv_frames [rst_stream(stream_id: ^stream_id, error_code: :cancel)]
+
+    assert receive_responses_until_done_or_error(ref) == [
+             {:error, ref, %Error{reason: :request_timeout}}
+           ]
+  end
+
   test "pool supports registering with a name" do
     {:ok, _pool} =
       start_server_and_connect_with(fn port ->
