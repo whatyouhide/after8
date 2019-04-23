@@ -21,4 +21,8 @@ defmodule After8.Error do
   defp format_reason(:connection_process_went_down) do
     "the connection process went down mid-request"
   end
+
+  defp format_reason(:request_timeout) do
+    "the request timed out"
+  end
 end
