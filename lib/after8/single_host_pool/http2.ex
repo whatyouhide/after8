@@ -1,7 +1,11 @@
 defmodule After8.SingleHostPool.HTTP2 do
+  @moduledoc """
+  TODO: write docs.
+  """
+
   @behaviour :gen_statem
 
-  alias Mint.{HTTP2, HTTPError}
+  alias Mint.{HTTP2, HTTPError, Types}
 
   require Logger
 
@@ -27,6 +31,45 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   ## Public API
 
+  @doc """
+  Starts a HTTP/2 connection to the given host.
+
+  This function starts a HTTP/2 connection to the given host. If the connection
+  process is started correctly, `{:ok, pid}` is returned. The process might be
+  started correctly even if the HTTP/2 connection itself can't be established
+  right away.
+
+  ## Options
+
+    * `:name` - a name for registering the connection process. See `GenServer`
+      for more information on name registration.
+
+    * `:scheme` - the scheme to use to connect to the given server,
+      `:http` or `:https`. This option is required.
+
+    * `:host` (binary) - the host to connect to. This option is required.
+
+    * `:port` (integer) - the port to connect to. This option is required.
+
+    * `:transport_opts` (keyword list) - the options to use when establishing
+      the socket connection. Some of these options, like `:mode` or `:active`,
+      will be overridden. Default is `[]`.
+
+    * `:client_settings` (keyword list) - HTTP/2 settings that the client will
+      communicate to the server. See `Mint.HTTP2.put_settings/2` for more
+      information on the supported settings. Note that the `:enable_push`
+      setting is forced to be `false` since the single host pool doesn't support
+      server push.
+
+    * `:backoff_initial` (integer) - the initial backoff period (in milliseconds) to
+      wait before attempting a reconnection after a disconnection. Defaults to
+      `#{@default_backoff_initial}`.
+
+    * `:backoff_max` (integer) - the maximum backoff period (in milliseconds) to
+      wait when reconnecting after failed connections attempts. Defaults to
+      `#{@default_backoff_max}`.
+
+  """
   @spec start_link(keyword()) :: :gen_statem.start_ret()
   def start_link(opts) when is_list(opts) do
     {gen_statem_opts, opts} =
@@ -59,30 +102,34 @@ defmodule After8.SingleHostPool.HTTP2 do
     end
   end
 
-  @spec stream_request(
-          t(),
-          String.t(),
-          String.t(),
-          Mint.Types.headers(),
-          nil | iodata() | :stream,
-          keyword()
-        ) ::
-          {:ok, Mint.Types.request_ref()} | {:error, reason :: term()}
+  @doc """
+  TODO: write docs.
+  """
+  @spec stream_request(t(), String.t(), String.t(), Types.headers(), body, keyword()) ::
+          {:ok, Types.request_ref()} | {:error, reason :: term()}
+        when body: nil | iodata() | :stream
   def stream_request(pool, method, path, headers, body \\ nil, options \\ []) do
     pool = GenServer.whereis(pool)
     options = Keyword.put_new(options, :timeout, :infinity)
     :gen_statem.call(pool, {:stream_request, method, path, headers, body, options})
   end
 
-  @spec stream_request_body(t(), Mint.Types.request_ref(), iodata() | :eof) ::
+  @doc """
+  TODO: write docs.
+  """
+  @spec stream_request_body(t(), Types.request_ref(), iodata() | :eof) ::
           :ok | {:error, reason :: term()}
   def stream_request_body(pool, ref, chunk) do
     pool = GenServer.whereis(pool)
     :gen_statem.call(pool, {:stream_request_body, ref, chunk})
   end
 
-  @spec request(t(), String.t(), String.t(), Mint.Types.headers(), nil | iodata(), keyword()) ::
+  @doc """
+  TODO: write docs.
+  """
+  @spec request(t(), String.t(), String.t(), Types.headers(), body, keyword()) ::
           {:ok, response :: map()} | {:error, reason :: term()}
+        when body: nil | iodata()
   def request(pool, method, path, headers, body \\ nil, options \\ []) do
     options = Keyword.put_new(options, :timeout, :infinity)
     timeout = options[:timeout]
@@ -160,6 +207,9 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   ## Disconnected
 
+  @doc false
+  def disconnected(event, content, data)
+
   # This only happens the first time we enter the first state, which is :disconnected.
   def disconnected(:enter, :disconnected, _data) do
     :keep_state_and_data
@@ -225,6 +275,9 @@ defmodule After8.SingleHostPool.HTTP2 do
   end
 
   ## Connected
+
+  @doc false
+  def connected(event, content, data)
 
   def connected(:enter, _old_state, _data) do
     :keep_state_and_data
@@ -355,6 +408,9 @@ defmodule After8.SingleHostPool.HTTP2 do
   end
 
   ## Connected (read-only)
+
+  @doc false
+  def connected_read_only(event, content, data)
 
   def connected_read_only(:enter, _old_state, _data) do
     :keep_state_and_data
