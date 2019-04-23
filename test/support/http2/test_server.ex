@@ -17,18 +17,17 @@ defmodule After8.HTTP2.TestServer do
   ]
 
   def start_and_connect_with(options, fun) when is_list(options) and is_function(fun, 1) do
-    ref = make_ref()
     parent = self()
-
     server_settings = Keyword.get(options, :server_settings, [])
 
-    task = Task.async(fn -> start_socket_and_accept(parent, ref, server_settings) end)
-    assert_receive {^ref, port}, 100
+    {:ok, listen_socket} = :ssl.listen(0, @ssl_opts)
+    {:ok, {_address, port}} = :ssl.sockname(listen_socket)
+
+    task = Task.async(fn -> accept(listen_socket, parent, server_settings) end)
 
     result = fun.(port)
 
     {:ok, server_socket} = Task.await(task)
-
     :ok = :ssl.setopts(server_socket, active: true)
 
     server = %__MODULE__{
@@ -105,12 +104,7 @@ defmodule After8.HTTP2.TestServer do
     server.socket
   end
 
-  defp start_socket_and_accept(parent, ref, server_settings) do
-    {:ok, listen_socket} = :ssl.listen(0, @ssl_opts)
-    {:ok, {_address, port}} = :ssl.sockname(listen_socket)
-    send(parent, {ref, port})
-
-    # Let's accept a new connection.
+  defp accept(listen_socket, parent, server_settings) do
     {:ok, socket} = :ssl.transport_accept(listen_socket)
     :ok = :ssl.ssl_accept(socket)
 
