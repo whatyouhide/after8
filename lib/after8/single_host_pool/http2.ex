@@ -5,14 +5,21 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   require Logger
 
-  defstruct [
-    :conn,
-    :host,
-    :port,
-    :scheme,
-    :connect_opts,
-    requests: %{}
-  ]
+  # Backoffs in milliseconds.
+  @default_backoff_initial 500
+  @default_backoff_max 30_000
+
+  # Backoff exponent as an integer.
+  @backoff_exponent 2
+
+  defstruct conn: nil,
+            host: nil,
+            port: nil,
+            scheme: nil,
+            connect_opts: nil,
+            backoff_initial: nil,
+            backoff_max: nil,
+            requests: %{}
 
   ## Types
 
@@ -85,13 +92,15 @@ defmodule After8.SingleHostPool.HTTP2 do
       scheme: Keyword.fetch!(opts, :scheme),
       host: Keyword.fetch!(opts, :host),
       port: Keyword.fetch!(opts, :port),
+      backoff_initial: Keyword.get(opts, :backoff_initial, @default_backoff_initial),
+      backoff_max: Keyword.get(opts, :backoff_max, @default_backoff_max),
       connect_opts: [
         transport_opts: Keyword.get(opts, :transport_opts, []),
         client_settings: client_settings
       ]
     }
 
-    {:ok, :disconnected, data, {:next_event, :internal, :connect}}
+    {:ok, :disconnected, data, {:next_event, :internal, {:connect, data.backoff_initial}}}
   end
 
   ## States
@@ -114,12 +123,11 @@ defmodule After8.SingleHostPool.HTTP2 do
     data = put_in(data.requests, %{})
     data = put_in(data.conn, nil)
 
-    # TODO: exponential backoff.
-    actions = [{{:timeout, :reconnect}, 1000, nil}]
+    actions = [{{:timeout, :reconnect}, data.backoff_initial, data.backoff_initial}]
     {:keep_state, data, actions}
   end
 
-  def disconnected(:internal, :connect, data) do
+  def disconnected(:internal, {:connect, next_backoff}, data) do
     case HTTP2.connect(data.scheme, data.host, data.port, data.connect_opts) do
       {:ok, conn} ->
         data = %{data | conn: conn}
@@ -127,13 +135,13 @@ defmodule After8.SingleHostPool.HTTP2 do
 
       {:error, _error} ->
         # TODO: log the error.
-        # TODO: exponential backoff.
-        {:keep_state_and_data, {{:timeout, :reconnect}, 1000, nil}}
+        {:keep_state_and_data, {{:timeout, :reconnect}, next_backoff, next_backoff}}
     end
   end
 
-  def disconnected({:timeout, :reconnect}, nil, _data) do
-    {:keep_state_and_data, {:next_event, :internal, :connect}}
+  def disconnected({:timeout, :reconnect}, backoff, data) do
+    next_backoff = min(data.backoff_max, backoff * @backoff_exponent)
+    {:keep_state_and_data, {:next_event, :internal, {:connect, next_backoff}}}
   end
 
   # If we get a request while the connection is closed for writing, we
