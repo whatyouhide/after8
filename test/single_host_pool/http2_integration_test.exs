@@ -61,6 +61,7 @@ defmodule After8.SingleHostPool.HTTP2Integration do
   end
 
   describe "localhost:99999" do
+    @tag :capture_log
     test "any request" do
       {:ok, pool} = HTTP2.start_link(scheme: :https, host: "localhost", port: 99999)
 

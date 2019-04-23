@@ -134,6 +134,26 @@ defmodule After8.SingleHostPool.HTTP2Test do
            ]
   end
 
+  # In the future, we will queue requests here.
+  test "if connections reaches max concurrent streams, we return an error" do
+    server_settings = [max_concurrent_streams: 1]
+
+    {:ok, pool} =
+      start_server_and_connect_with([server_settings: server_settings], fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [])
+
+    assert {:error, %{reason: :too_many_concurrent_requests}} =
+             HTTP2.stream_request(pool, "GET", "/", [])
+  end
+
   test "pool supports registering with a name" do
     {:ok, _pool} =
       start_server_and_connect_with(fn port ->
