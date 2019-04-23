@@ -27,16 +27,42 @@ defmodule After8.SingleHostPool.HTTP2 do
 
   ## Public API
 
-  # TODO: split out gen_statem specific option and handle name registration like
-  # we do in GenServer in Elixir.
   @spec start_link(keyword()) :: :gen_statem.start_ret()
-  def start_link(opts) do
-    :gen_statem.start_link(__MODULE__, opts, [])
+  def start_link(opts) when is_list(opts) do
+    {gen_statem_opts, opts} =
+      Keyword.split(opts, [:debug, :timeout, :spawn_opt, :hibernate_after])
+
+    case Keyword.pop(opts, :name) do
+      {nil, opts} ->
+        :gen_statem.start_link(__MODULE__, opts, gen_statem_opts)
+
+      {atom, opts} when is_atom(atom) ->
+        :gen_statem.start_link({:local, atom}, __MODULE__, opts, gen_statem_opts)
+
+      {{:global, term}, opts} ->
+        :gen_statem.start_link({:global, term}, __MODULE__, opts, gen_statem_opts)
+
+      {{:via, via_module, term}, opts} when is_atom(via_module) ->
+        :gen_statem.start_link({:via, via_module, term}, __MODULE__, opts, gen_statem_opts)
+
+      {other, _opts} ->
+        raise ArgumentError, """
+        expected :name option to be one of the following:
+
+          * nil
+          * atom
+          * {:global, term}
+          * {:via, module, term}
+
+        Got: #{inspect(other)}
+        """
+    end
   end
 
   @spec stream_request(t(), String.t(), String.t(), Mint.Types.headers(), nil | iodata()) ::
           {:ok, Mint.Types.request_ref()} | {:error, reason :: term()}
   def stream_request(pool, method, path, headers, body \\ nil) do
+    pool = GenServer.whereis(pool)
     :gen_statem.call(pool, {:stream_request, method, path, headers, body})
   end
 
@@ -44,6 +70,7 @@ defmodule After8.SingleHostPool.HTTP2 do
           {:ok, response :: map()} | {:error, reason :: term()}
   def request(pool, method, path, headers, body \\ nil) do
     # TODO: implement timeout.
+    pool = GenServer.whereis(pool)
 
     case stream_request(pool, method, path, headers, body) do
       {:ok, ref} ->

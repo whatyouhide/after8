@@ -132,6 +132,23 @@ defmodule After8.SingleHostPool.HTTP2Test do
            ]
   end
 
+  test "pool supports registering with a name" do
+    {:ok, _pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none],
+          name: __MODULE__.TestPool
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(__MODULE__.TestPool, "GET", "/", [])
+
+    assert_recv_frames [headers()]
+  end
+
   @pdict_key {__MODULE__, :http2_test_server}
 
   defp start_server_and_connect_with(opts \\ [], fun) do
