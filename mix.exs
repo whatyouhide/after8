@@ -36,7 +36,8 @@ defmodule After8.MixProject do
     [
       {:castore, "~> 0.1"},
       {:mint, path: "~/Code/mint"},
-      {:ex_doc, "~> 0.20", only: :dev}
+      {:ex_doc, "~> 0.20", only: :dev},
+      {:dialyxir, "1.0.0-rc.6", only: :dev}
     ]
   end
 end
