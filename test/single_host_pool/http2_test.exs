@@ -59,6 +59,7 @@ defmodule After8.SingleHostPool.HTTP2Test do
     assert %Mint.HTTPError{reason: {:max_header_list_size_exceeded, _, _}} = error
   end
 
+  @tag :capture_log
   test "if server sends GOAWAY and then replies, we get the replies but are closed for writing" do
     {:ok, pool} =
       start_server_and_connect_with(fn port ->
@@ -102,6 +103,7 @@ defmodule After8.SingleHostPool.HTTP2Test do
     assert {:error, %Error{reason: :disconnected}} = HTTP2.stream_request(pool, "GET", "/", [])
   end
 
+  @tag :capture_log
   test "if server disconnects while there are waiting clients, we notify those clients" do
     {:ok, pool} =
       start_server_and_connect_with(fn port ->

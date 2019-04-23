@@ -160,8 +160,13 @@ defmodule After8.SingleHostPool.HTTP2 do
         data = %{data | conn: conn}
         {:next_state, :connected, data}
 
-      {:error, _error} ->
-        # TODO: log the error.
+      {:error, error} ->
+        _ =
+          Logger.error([
+            "Failed to connect to #{data.scheme}:#{data.host}:#{data.port}: ",
+            Exception.message(error)
+          ])
+
         {:keep_state_and_data, {{:timeout, :reconnect}, next_backoff, next_backoff}}
     end
   end
@@ -229,8 +234,12 @@ defmodule After8.SingleHostPool.HTTP2 do
             {:next_state, :disconnected, data}
         end
 
-      {:error, conn, _error, responses} ->
-        # TODO: log error.
+      {:error, conn, error, responses} ->
+        _ =
+          Logger.error([
+            "Received error from server #{data.scheme}:#{data.host}:#{data.port}: ",
+            Exception.message(error)
+          ])
 
         data = put_in(data.conn, conn)
         data = Enum.reduce(responses, data, &handle_response(&2, &1))
@@ -242,7 +251,7 @@ defmodule After8.SingleHostPool.HTTP2 do
         end
 
       :unknown ->
-        _ = Logger.warn(fn -> "Received unknown message: #{inspect(message)}" end)
+        _ = Logger.warn(["Received unknown message: ", inspect(message)])
         :keep_state_and_data
     end
   end
@@ -275,8 +284,13 @@ defmodule After8.SingleHostPool.HTTP2 do
           {:next_state, :disconnected, data}
         end
 
-      {:error, conn, _error, responses} ->
-        # TODO: log error?
+      {:error, conn, error, responses} ->
+        _ =
+          Logger.error([
+            "Received error from server #{data.scheme}:#{data.host}:#{data.port}: ",
+            Exception.message(error)
+          ])
+
         data = put_in(data.conn, conn)
         data = Enum.reduce(responses, data, &handle_response(&2, &1))
 
@@ -287,7 +301,7 @@ defmodule After8.SingleHostPool.HTTP2 do
         end
 
       :unknown ->
-        _ = Logger.warn(fn -> "Received unknown message: #{inspect(message)}" end)
+        _ = Logger.warn(["Received unknown message: ", inspect(message)])
         :keep_state_and_data
     end
   end
