@@ -64,7 +64,7 @@ defmodule After8.SingleHostPool.HTTP2 do
           String.t(),
           String.t(),
           Mint.Types.headers(),
-          nil | iodata(),
+          nil | iodata() | :stream,
           keyword()
         ) ::
           {:ok, Mint.Types.request_ref()} | {:error, reason :: term()}
