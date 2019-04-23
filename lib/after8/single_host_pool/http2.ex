@@ -74,10 +74,16 @@ defmodule After8.SingleHostPool.HTTP2 do
     :gen_statem.call(pool, {:stream_request, method, path, headers, body, options})
   end
 
-  @spec request(t(), String.t(), String.t(), Mint.Types.headers(), nil | iodata()) ::
+  @spec stream_request_body(t(), Mint.Types.request_ref(), iodata() | :eof) ::
+          :ok | {:error, reason :: term()}
+  def stream_request_body(pool, ref, chunk) do
+    pool = GenServer.whereis(pool)
+    :gen_statem.call(pool, {:stream_request_body, ref, chunk})
+  end
+
+  @spec request(t(), String.t(), String.t(), Mint.Types.headers(), nil | iodata(), keyword()) ::
           {:ok, response :: map()} | {:error, reason :: term()}
   def request(pool, method, path, headers, body \\ nil, options \\ []) do
-    pool = GenServer.whereis(pool)
     options = Keyword.put_new(options, :timeout, :infinity)
     timeout = options[:timeout]
 
@@ -214,6 +220,10 @@ defmodule After8.SingleHostPool.HTTP2 do
     {:keep_state_and_data, {:reply, from, {:error, wrap_error(:disconnected)}}}
   end
 
+  def disconnected({:call, from}, {:stream_request_body, _ref, _chunk}, _data) do
+    {:keep_state_and_data, {:reply, from, {:error, wrap_error(:disconnected)}}}
+  end
+
   ## Connected
 
   def connected(:enter, _old_state, _data) do
@@ -289,6 +299,29 @@ defmodule After8.SingleHostPool.HTTP2 do
       :unknown ->
         _ = Logger.warn(["Received unknown message: ", inspect(message)])
         :keep_state_and_data
+    end
+  end
+
+  def connected({:call, from}, {:stream_request_body, ref, chunk}, data) do
+    case HTTP2.stream_request_body(data.conn, ref, chunk) do
+      {:ok, conn} ->
+        data = put_in(data.conn, conn)
+        {:keep_state, data, [{:reply, from, :ok}]}
+
+      {:error, conn, %HTTPError{reason: :closed_for_writing}} ->
+        data = put_in(data.conn, conn)
+        actions = [{:reply, from, {:error, wrap_error(:read_only)}}]
+        {:next_state, :connected_read_only, data, actions}
+
+      {:error, conn, error} ->
+        data = put_in(data.conn, conn)
+        actions = [{:reply, from, {:error, error}}]
+
+        if HTTP2.open?(conn) do
+          {:keep_state, data, actions}
+        else
+          {:next_state, :disconnected, data, actions}
+        end
     end
   end
 
@@ -369,6 +402,10 @@ defmodule After8.SingleHostPool.HTTP2 do
         _ = Logger.warn(["Received unknown message: ", inspect(message)])
         :keep_state_and_data
     end
+  end
+
+  def connected_read_only({:call, from}, {:stream_request_body, _ref, _chunk}, _data) do
+    {:keep_state_and_data, {:reply, from, {:error, wrap_error(:read_only)}}}
   end
 
   # In this state, we don't need to call HTTP2.cancel_request/2 since the connection

@@ -94,7 +94,6 @@ defmodule After8.SingleHostPool.HTTP2Test do
     assert {:error, %Error{reason: :read_only}} = HTTP2.stream_request(pool, "GET", "/", [])
 
     # If the server now closes the socket, we actually shut down.
-
     :ok = :ssl.close(server_socket())
 
     Process.sleep(50)
@@ -167,7 +166,7 @@ defmodule After8.SingleHostPool.HTTP2Test do
 
     assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [], nil, timeout: 0)
 
-    assert_recv_frames [headers()]
+    assert_recv_frames [headers(stream_id: stream_id), rst_stream(stream_id: stream_id)]
 
     assert receive_responses_until_done_or_error(ref) == [
              {:error, ref, %Error{reason: :request_timeout}}
@@ -268,6 +267,76 @@ defmodule After8.SingleHostPool.HTTP2Test do
     assert receive_responses_until_done_or_error(ref) == [
              {:error, ref, %Error{reason: :request_timeout}}
            ]
+  end
+
+  @tag :capture_log
+  test "stream_request_body/3 returns an error right away when disconnected" do
+    {:ok, pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [], :stream)
+
+    assert_recv_frames [headers()]
+
+    :ssl.close(server_socket())
+    Process.sleep(50)
+
+    assert {:error, %Error{reason: :disconnected}} = HTTP2.stream_request_body(pool, ref, "chunk")
+  end
+
+  test "stream_request_body/3 returns an error when the connection is read-only" do
+    {:ok, pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [], :stream)
+
+    assert_recv_frames [headers(stream_id: stream_id)]
+
+    server_send_frames([
+      goaway(last_stream_id: stream_id, error_code: :no_error, debug_data: "all good")
+    ])
+
+    Process.sleep(50)
+
+    assert {:error, %Error{reason: :read_only}} = HTTP2.stream_request_body(pool, ref, "chunk")
+  end
+
+  test "stream_request_body/3 streams a chunk of body" do
+    {:ok, pool} =
+      start_server_and_connect_with(fn port ->
+        HTTP2.start_link(
+          scheme: :https,
+          host: "localhost",
+          port: port,
+          transport_opts: [verify: :verify_none]
+        )
+      end)
+
+    assert {:ok, ref} = HTTP2.stream_request(pool, "GET", "/", [], :stream)
+
+    assert_recv_frames [headers(stream_id: stream_id)]
+
+    assert :ok = HTTP2.stream_request_body(pool, ref, "{")
+    assert_recv_frames [data(stream_id: ^stream_id, data: "{")]
+
+    assert :ok = HTTP2.stream_request_body(pool, ref, "}")
+    assert_recv_frames [data(stream_id: ^stream_id, data: "}")]
+
+    assert :ok = HTTP2.stream_request_body(pool, ref, :eof)
   end
 
   test "pool supports registering with a name" do
