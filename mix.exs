@@ -1,14 +1,23 @@
 defmodule After8.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+
   def project do
     [
       app: :after8,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.8",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      elixirc_paths: elixirc_paths(Mix.env())
+      elixirc_paths: elixirc_paths(Mix.env()),
+
+      # Docs
+      name: "After8",
+      docs: [
+        source_ref: "v#{@version}",
+        source_url: "https://github.com/whatyouhide/after8"
+      ]
     ]
   end
 
@@ -26,7 +35,8 @@ defmodule After8.MixProject do
   defp deps do
     [
       {:castore, "~> 0.1"},
-      {:mint, path: "~/Code/mint"}
+      {:mint, path: "~/Code/mint"},
+      {:ex_doc, "~> 0.20", only: :dev}
     ]
   end
 end
