@@ -189,8 +189,6 @@ defmodule After8.SingleHostPool.HTTP2 do
   end
 
   def connected({:call, from}, {:stream_request, method, path, headers, body}, data) do
-    # TODO: monitor caller.
-
     case HTTP2.request(data.conn, method, path, headers, body) do
       {:ok, conn, ref} ->
         {from_pid, _from_ref} = from
