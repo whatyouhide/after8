@@ -25,4 +25,8 @@ defmodule After8.Error do
   defp format_reason(:request_timeout) do
     "the request timed out"
   end
+
+  defp format_reason(:no_connections_available) do
+    "there are no connections available"
+  end
 end
