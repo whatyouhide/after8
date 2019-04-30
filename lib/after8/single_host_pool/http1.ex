@@ -7,13 +7,13 @@ defmodule After8.SingleHostPool.HTTP1 do
 
   defstruct scheme: nil, host: nil, port: nil, max_connections: nil, conns: [], requests: %{}
 
+  @genserver_start_opts [:debug, :name, :timeout, :spawn_opt, :hibernate_after]
+
   ## Public API
 
   def start_link(opts) do
-    {genserver_opts, opts} =
-      Keyword.split(opts, [:debug, :name, :timeout, :spawn_opt, :hibernate_after])
-
-    GenServer.start_link(__MODULE__, opts, genserver_opts)
+    {genserver_start_opts, opts} = Keyword.split(opts, @genserver_start_opts)
+    GenServer.start_link(__MODULE__, opts, genserver_start_opts)
   end
 
   def stream_request(pool, method, path, headers, body \\ nil, options \\ []) do
@@ -68,20 +68,20 @@ defmodule After8.SingleHostPool.HTTP1 do
   end
 
   def handle_call({:stream_request, method, path, headers, body, _opts}, {from_pid, _}, state) do
-    with {:ok, state, conn} <- pop_idle_conn_or_open(state),
-         Logger.debug("Reusing connectiong: #{:erlang.phash2(conn)}"),
-         {:ok, conn, ref} <- HTTP1.request(conn, method, path, headers, body) do
-      state = update_in(state.conns, &[conn | &1])
-      state = put_in(state.requests[ref], from_pid)
-      {:reply, {:ok, ref}, state}
-    else
-      # Error when opening a new connection.
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+    case pop_idle_conn_or_open(state) do
+      {:ok, state, conn} ->
+        case HTTP1.request(conn, method, path, headers, body) do
+          {:ok, conn, ref} ->
+            state = update_in(state.conns, &[conn | &1])
+            state = put_in(state.requests[ref], from_pid)
+            {:reply, {:ok, ref}, state}
 
-      # Error when sending the request.
-      {:error, conn, reason} ->
-        state = update_in(state.conns, &[conn | &1])
+          {:error, conn, reason} ->
+            state = update_in(state.conns, &[conn | &1])
+            {:reply, {:errorm, reason}, state}
+        end
+
+      {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
   end
@@ -92,7 +92,7 @@ defmodule After8.SingleHostPool.HTTP1 do
         {:noreply, state}
 
       :unknown ->
-        Logger.warn("Unknown message: #{inspect(message)}")
+        _ = Logger.warn("Unknown message: #{inspect(message)}")
         {:noreply, state}
     end
   end
