@@ -103,7 +103,66 @@ defmodule After8.SingleHostPool.HTTP2 do
   end
 
   @doc """
-  TODO: write docs.
+  Sends the given request and gets the response in a streaming way.
+
+  This function sends the given request through `pool`. If the request is sent
+  successfully, it returns `{:ok, request_ref}`. `request_ref` identifies the
+  request and is used to tag responses. Responses are delivered in a streaming
+  way to the process that calls this function and are tagged with the returned
+  `request_ref`. Responses are of type `t:Mint.Types.response/0`. The most
+  common ones are:
+
+    * `{:status, request_ref, status}`
+    * `{:headers, request_ref, headers}`
+    * `{:data, request_ref, chunk_of_data}`
+    * `{:done, request_ref}`
+    * `{:error, request_ref, reason}`
+
+  The request shouldn't be considered done until the `{:done, request_ref}`
+  or `{:error, request_ref, reason}` is delivered.
+
+  If there's an error sending the request, then `{:error, reason}` is returned.
+
+  ## Body
+
+  The `body` parameter can be:
+
+    * iodata - in this case, it's sent as a whole body to the server.
+
+    * `nil` - in this case, no body is sent to the server.
+
+    * `:stream` - in this case, the request becomes a streaming request.
+      See `stream_request_body/3` for information on how to stream the
+      body of the request.
+
+  ## Options
+
+    * `:timeout` (non-negative integer or `:infinity`) - after this timeout
+      the request fails and `{:error, %After8.Error{reason: :request_timeout}}` is
+      sent as a response. See the "Timeouts" section below for more information. If the
+      timeout is `:infinity`, the request never times out.
+
+  ## Timeouts
+
+  When a request times out according to the `:timeout` option, the request is
+  cancelled. However, there are no guarantees that the request is cancelled
+  successfully *before* a response has been sent by the server. For this reason,
+  a timed out request is never safe to retry unless the semantics of the
+  request itself allow it (for example, if the request is idempotent).
+
+  ## Examples
+
+      opts = [scheme: :https, host: "google.com", port: 443]
+      {:ok, pool} = After8.SingleHostPool.HTTP2.start_link(opts)
+
+      {:ok, ref} = After8.SingleHostPool.HTTP2.stream_request(pool, "GET", "/", [])
+
+      flush()
+      #=> {:status, ^ref, 200}
+      #=> {:headers, ^ref, [...]}
+      #=> {:data, ^ref, "<html>..."}
+      #=> {:done, ^ref}
+
   """
   @spec stream_request(t(), String.t(), String.t(), Types.headers(), body, keyword()) ::
           {:ok, Types.request_ref()} | {:error, reason :: term()}
@@ -115,7 +174,42 @@ defmodule After8.SingleHostPool.HTTP2 do
   end
 
   @doc """
-  TODO: write docs.
+  Streams a chunk of request body for the given request.
+
+  This function streams a chunk of body (`chunk`) on the request identified
+  by `ref`. A request with a streaming request body can be initiated by passing
+  `:stream` as the body in `stream_request/6`. Thne, you can use this function
+  to send chunks of body as pieces of iodata. When you're done sending the body,
+  call this function with `:eof` as the body to signal to the server that the
+  request is done.
+
+  If the chunk is sent correctly, `:ok` is returned. Otherwise, `{:error, reason}`
+  is returned.
+
+  ## Examples
+
+      opts = [scheme: :https, host: "google.com", port: 443]
+      {:ok, pool} = After8.SingleHostPool.HTTP2.start_link(opts)
+
+      {:ok, ref} =
+        After8.SingleHostPool.HTTP2.stream_request(
+          pool,
+          "GET",
+          "/",
+          [],
+          :stream
+        )
+
+      :ok = After8.SingleHostPool.HTTP2.stream_request_body(pool, ref, "{")
+      :ok = After8.SingleHostPool.HTTP2.stream_request_body(pool, ref, "}")
+      :ok = After8.SingleHostPool.HTTP2.stream_request_body(pool, ref, :eof)
+
+      flush()
+      #=> {:status, ^ref, 200}
+      #=> {:headers, ^ref, [...]}
+      #=> {:data, ^ref, "<html>..."}
+      #=> {:done, ^ref}
+
   """
   @spec stream_request_body(t(), Types.request_ref(), iodata() | :eof) ::
           :ok | {:error, reason :: term()}
@@ -125,7 +219,42 @@ defmodule After8.SingleHostPool.HTTP2 do
   end
 
   @doc """
-  TODO: write docs.
+  Sends a synchronous request.
+
+  Behaves similarly to `stream_request/6` but blocks until a full
+  response is received. If a response is received successfully,
+  `{:ok, response}` is returned where `response` is a `t:response/0`
+  map. If there's an error in sending the request or if the request
+  errors out, `{:error, reason}` is returned.
+
+  `body` can either be `nil` if no body has to be sent to the server, or
+  a piece of iodata to send a body to the server. `:stream`, which is
+  supported in `stream_request/6`, is not supported here.
+
+  ## Options
+
+    * `:timeout` (non-negative integer or `:infinity`) - after this timeout
+      the request fails and `{:error, %After8.Error{reason: :request_timeout}}`
+      is returned. See the "Timeouts" section in the docs for `stream_request/6`
+      for more information. If the timeout is `:infinity`, the request never
+      times out.
+
+  ## Examples
+
+      opts = [scheme: :https, host: "google.com", port: 443]
+      {:ok, pool} = After8.SingleHostPool.HTTP2.start_link(opts)
+
+      {:ok, response} = After8.SingleHostPool.HTTP2.request(pool, "GET", "/", [])
+
+      response.status
+      #=> 200
+
+      response.headers
+      #=> [...]
+
+      response.data
+      #=> "<html>..."
+
   """
   @spec request(t(), String.t(), String.t(), Types.headers(), body, keyword()) ::
           {:ok, response :: map()} | {:error, reason :: term()}
