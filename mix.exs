@@ -35,7 +35,8 @@ defmodule After8.MixProject do
   defp deps do
     [
       {:castore, "~> 0.1"},
-      {:mint, path: "~/Code/mint"},
+      {:mint, "~> 0.2"},
+      {:bypass, "~> 1.0", only: :test},
       {:ex_doc, "~> 0.20", only: :dev},
       {:dialyxir, "1.0.0-rc.6", only: :dev, runtime: false}
     ]
