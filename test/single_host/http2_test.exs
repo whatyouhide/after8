@@ -1,12 +1,12 @@
-defmodule After8.SingleHostPool.HTTP2Test do
+defmodule MintPool.SingleHost.HTTP2Test do
   use ExUnit.Case
 
   import Mint.HTTP2.Frame
 
-  alias After8.SingleHostPool.HTTP2
-  alias After8.Error
+  alias MintPool.SingleHost.HTTP2
+  alias MintPool.Error
 
-  alias After8.HTTP2.TestServer
+  alias MintPool.HTTP2.TestServer
 
   defmacrop assert_recv_frames(frames) when is_list(frames) do
     quote do: unquote(frames) = recv_next_frames(unquote(length(frames)))

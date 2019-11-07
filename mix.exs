@@ -1,11 +1,11 @@
-defmodule After8.MixProject do
+defmodule MintPool.MixProject do
   use Mix.Project
 
   @version "0.1.0"
 
   def project do
     [
-      app: :after8,
+      app: :mint_pool,
       version: @version,
       elixir: "~> 1.8",
       start_permanent: Mix.env() == :prod,
@@ -13,10 +13,10 @@ defmodule After8.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
 
       # Docs
-      name: "After8",
+      name: "MintPool",
       docs: [
         source_ref: "v#{@version}",
-        source_url: "https://github.com/whatyouhide/after8"
+        source_url: "https://github.com/elixir-mint/mint_pool"
       ]
     ]
   end

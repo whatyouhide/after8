@@ -1,4 +1,4 @@
-defmodule After8.SingleHostPool.HTTP1 do
+defmodule MintPool.SingleHost.HTTP1 do
   use GenServer
 
   alias Mint.HTTP1
@@ -200,6 +200,6 @@ defmodule After8.SingleHostPool.HTTP1 do
   end
 
   defp wrap_error(reason) do
-    %After8.Error{reason: reason}
+    %MintPool.Error{reason: reason}
   end
 end

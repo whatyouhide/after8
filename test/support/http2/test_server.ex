@@ -1,4 +1,4 @@
-defmodule After8.HTTP2.TestServer do
+defmodule MintPool.HTTP2.TestServer do
   import ExUnit.Assertions
 
   alias Mint.{HTTP2.Frame, HTTP2.HPACK}

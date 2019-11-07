@@ -1,4 +1,4 @@
-defmodule After8.SingleHostPool.HTTP2 do
+defmodule MintPool.SingleHost.HTTP2 do
   @moduledoc """
   TODO: write docs.
   """
@@ -138,7 +138,7 @@ defmodule After8.SingleHostPool.HTTP2 do
   ## Options
 
     * `:timeout` (non-negative integer or `:infinity`) - after this timeout
-      the request fails and `{:error, %After8.Error{reason: :request_timeout}}` is
+      the request fails and `{:error, %MintPool.Error{reason: :request_timeout}}` is
       sent as a response. See the "Timeouts" section below for more information. If the
       timeout is `:infinity`, the request never times out.
 
@@ -153,9 +153,9 @@ defmodule After8.SingleHostPool.HTTP2 do
   ## Examples
 
       opts = [scheme: :https, host: "google.com", port: 443]
-      {:ok, pool} = After8.SingleHostPool.HTTP2.start_link(opts)
+      {:ok, pool} = MintPool.SingleHost.HTTP2.start_link(opts)
 
-      {:ok, ref} = After8.SingleHostPool.HTTP2.stream_request(pool, "GET", "/", [])
+      {:ok, ref} = MintPool.SingleHost.HTTP2.stream_request(pool, "GET", "/", [])
 
       flush()
       #=> {:status, ^ref, 200}
@@ -189,10 +189,10 @@ defmodule After8.SingleHostPool.HTTP2 do
   ## Examples
 
       opts = [scheme: :https, host: "google.com", port: 443]
-      {:ok, pool} = After8.SingleHostPool.HTTP2.start_link(opts)
+      {:ok, pool} = MintPool.SingleHost.HTTP2.start_link(opts)
 
       {:ok, ref} =
-        After8.SingleHostPool.HTTP2.stream_request(
+        MintPool.SingleHost.HTTP2.stream_request(
           pool,
           "GET",
           "/",
@@ -200,9 +200,9 @@ defmodule After8.SingleHostPool.HTTP2 do
           :stream
         )
 
-      :ok = After8.SingleHostPool.HTTP2.stream_request_body(pool, ref, "{")
-      :ok = After8.SingleHostPool.HTTP2.stream_request_body(pool, ref, "}")
-      :ok = After8.SingleHostPool.HTTP2.stream_request_body(pool, ref, :eof)
+      :ok = MintPool.SingleHost.HTTP2.stream_request_body(pool, ref, "{")
+      :ok = MintPool.SingleHost.HTTP2.stream_request_body(pool, ref, "}")
+      :ok = MintPool.SingleHost.HTTP2.stream_request_body(pool, ref, :eof)
 
       flush()
       #=> {:status, ^ref, 200}
@@ -234,7 +234,7 @@ defmodule After8.SingleHostPool.HTTP2 do
   ## Options
 
     * `:timeout` (non-negative integer or `:infinity`) - after this timeout
-      the request fails and `{:error, %After8.Error{reason: :request_timeout}}`
+      the request fails and `{:error, %MintPool.Error{reason: :request_timeout}}`
       is returned. See the "Timeouts" section in the docs for `stream_request/6`
       for more information. If the timeout is `:infinity`, the request never
       times out.
@@ -242,9 +242,9 @@ defmodule After8.SingleHostPool.HTTP2 do
   ## Examples
 
       opts = [scheme: :https, host: "google.com", port: 443]
-      {:ok, pool} = After8.SingleHostPool.HTTP2.start_link(opts)
+      {:ok, pool} = MintPool.SingleHost.HTTP2.start_link(opts)
 
-      {:ok, response} = After8.SingleHostPool.HTTP2.request(pool, "GET", "/", [])
+      {:ok, response} = MintPool.SingleHost.HTTP2.request(pool, "GET", "/", [])
 
       response.status
       #=> 200
@@ -300,7 +300,7 @@ defmodule After8.SingleHostPool.HTTP2 do
     after
       fail_safe_timeout ->
         raise "no response was received even after waiting #{fail_safe_timeout}ms. " <>
-                "This is likely a bug in After8, but we're raising so that your system doesn't " <>
+                "This is likely a bug in MintPool, but we're raising so that your system doesn't " <>
                 "get stuck in an infinite receive."
     end
   end
@@ -642,6 +642,6 @@ defmodule After8.SingleHostPool.HTTP2 do
   end
 
   defp wrap_error(reason) do
-    %After8.Error{reason: reason}
+    %MintPool.Error{reason: reason}
   end
 end
