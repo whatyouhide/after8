@@ -1,7 +1,7 @@
-defmodule After8.SingleHostPool.HTTP2Integration do
+defmodule MintPool.SingleHost.HTTP2Integration do
   use ExUnit.Case
 
-  alias After8.SingleHostPool.HTTP2
+  alias MintPool.SingleHost.HTTP2
 
   setup_all do
     Logger.configure(level: :info)

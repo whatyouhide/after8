@@ -1,4 +1,4 @@
-defmodule After8.Error do
+defmodule MintPool.Error do
   defexception [:reason]
 
   def message(%__MODULE__{reason: reason}) do

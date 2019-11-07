@@ -1,7 +1,7 @@
-defmodule After8.SingleHostPool.HTTP1IntegrationTest do
+defmodule MintPool.SingleHost.HTTP1IntegrationTest do
   use ExUnit.Case
 
-  alias After8.SingleHostPool.HTTP1
+  alias MintPool.SingleHost.HTTP1
 
   describe "httpbin.org" do
     test "GET /get" do

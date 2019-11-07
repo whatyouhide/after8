@@ -1,8 +1,8 @@
-defmodule After8.SingleHostPool.HTTP1Test do
+defmodule MintPool.SingleHost.HTTP1Test do
   use ExUnit.Case
 
-  alias After8.Error
-  alias After8.SingleHostPool.HTTP1
+  alias MintPool.Error
+  alias MintPool.SingleHost.HTTP1
 
   setup do
     bypass = Bypass.open()
